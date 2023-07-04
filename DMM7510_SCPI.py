@@ -7,7 +7,7 @@ class DMM7510:
         self.tempbufferName = ""
         self.tempbuffSize = 0
         self.current_function = ""
-        #self.dynamicState()
+        self.err_code_dict()
         #self.CCstate()
         #self.CRstate()
         #self.expState()
@@ -26,16 +26,17 @@ class DMM7510:
         try:
             self.instrVISA = self.rm.open_resource(port_name)
             self.instrVISA.baud_rate = baudrate
-            self.response = ""
+            self.instrVISA.write('*RST')
+            self.instrVISA.write('*CLS')
         except:
             None
         print('connected')
         
     def disconnect(self):
         self.Write_command('logout')
-        print(self.Query_command(':SYST:ACC?'))
         try:
             self.instrVISA.close()
+            self.instrVISA.clear()
         except:
             None
             
@@ -48,13 +49,20 @@ class DMM7510:
         
 #----------------------------------------General Write read command------------------------------------
     def Query_command(self,command):
-        self.response=self.instrVISA.query(command)
-        #print("Query command = ",self.instrVISA.query(command)) #[Debug only]
-        return self.response
+        try:
+            self.response=self.instrVISA.query(command)
+            self.response=self.instrVISA.query(command)
+            #print("Query command = ",self.instrVISA.query(command)) #[Debug only]
+            return self.response
+        except:
+            print("An event has occured on the DMM")
+            self.ESR()
+
 
     def Write_command(self,command):
         try:
             self.instrVISA.write(command)
+            self.ESR()
         except:
             None
         print("Write command =", command) #[Debug only]
@@ -94,61 +102,100 @@ class DMM7510:
         self.tempbuffSize = buffSize
         print(buffName,buffSize)
 
-    def set_sampling_rate(self,func,rate): #for digitize only
-        
-        if self.get_current_function() == "NONE":
+    def set_sampling_rate(self,rate): #for digitize only
+        func = self.get_current_function()
+        if func[1] == 'STD':
             print("Sampling rate not set for non digitize function")    
         else:
-            self.Write_command(':DIG:%s:SRATE %d' %(func,rate))
-
-    def set_buffer_points(self,points,bufferName=""):
+            print(':DIG:%s:SRATE %d' %(func[0],rate))
+            #self.Write_command(':DIG:%s:SRATE %d' %(func[0],rate))
+            
+    def set_buffer_pts(self,points,bufferName=""):
         if bufferName == "":
             self.Write_command(':TRAC:POIN %d' % points)
         else:
             self.Write_command(':TRAC:POIN %d, "%s"' % (points,bufferName))
 
-    def start_meas(self,type="",bufferName="",func="",timestamp=0,unit=0):
+    def set_meas_pts(self,points):
+        self.Write_command(':COUN %d' % points)
+
+    def start_meas(self,func="",bufferName="",timestamp=0,unit=0):
         #reference - :MEAS:<function>? <buffername>, <bufferele1>, <bufferele2>
         #MEAS can operate without defining function
         self.base_string = ':MEAS'
         if func != "":
-            self.base_string = self.base_string + (':"%s"' % func)
+            self.base_string = self.base_string + (':%s' % func)
 
-        self.base_string = self.base_string + ('?')
+            self.base_string = self.base_string + ('?')
 
         if bufferName != "":
             self.base_string = self.base_string + ('"%s"' % bufferName)
         else:
-            self.base_string = self.base_string + ('"defbuffer1"')
+            self.base_string = self.base_string + (' "defbuffer1"')
                                                  
-        if timestap != 0:
+        if timestamp != 0:
             self.base_string = self.base_string + (',TST')
 
         if unit != 0:
-           self.base_string = self.base_string + (',UNIT') 
+           self.base_string = self.base_string + (',UNIT')
+
+        print(self.base_string)
+        self.Write_command(self.base_string)
+        
                                                                    
 #---------------------------------------------Read command-----------------------------------------
     def get_current_function(self):
+        #function to get the current measurement function used on the DMM
         func = self.Query_command(':FUNC?')
         func = self.Query_command(':FUNC?')
-        print(func)
+        #print(func)
         if "NONE" in func:
-            print("I'm here")
             func = self.Query_command(':DIG:FUNC?')
-            print(func)
-            return func
+            func = func.strip()
+            func = func.replace('"','')
+            meas_type = 'DIG'
+            #print(func)
         else:
             func = func.split(':')
             func = func[0]+'"'
-            self.current_function = func
-            print(self.current_function)
-            return func
+            func = func.replace('"','')
+            #self.current_function = func
+            #print(self.current_function)
+            meas_type = 'STD'
+        return [func, meas_type]
 
-    def get_buffer_function(self,bufferName=""):
-        if bufferName == "":
-            self.Write_command(':TRAC:POIN?' % points)
+    def get_active_buffer(self):
+        #checks the current buffer used for the measurement
+        buffer = self.Query_command(':DISPlay:BUFFer:ACTive?')
+        #buffer = self.Query_command(':DISPlay:LIGHt:STATe?')
+        return buffer
+
+    def get_buffer_pts(self,bufferName=""):
+        base_string = ':TRAC:POIN?'
+        if bufferName != "":
+            base_string = base_string + (' "%s"' % (bufferName))
+        print(base_string) #debug only
+        return (self.Query_command(base_string)).strip()
+
+    def read_buffer_data(self,end_index=1,bufferName="",timestamp=0,unit=0):
+        base_string = (':TRAC:DATA? 1,%d' % end_index)
+        if bufferName != "":
+            base_string = base_string + (', "%s"' % (bufferName))
         else:
-            self.Write_command(':TRAC:POIN? "%s"' % (points,bufferName))
+            base_string = base_string + (', "defbuffer1"')
+
+        if timestamp != 0:
+            base_string = base_string + (',TST')
+
+        if unit != 0:
+           base_string = base_string + (',UNIT')
+           
+        print(base_string)
+        buffer_data = self.Query_command(base_string)
+        print(buffer_data)
+        if len(buffer_data) < end_index:
+            buffer_data = self.Query_command(base_string)
+        return buffer_data
         
 
 #------------------------------------------Data holding function-----------------------------------
@@ -170,14 +217,29 @@ class DMM7510:
     def ABState(self,state='A'):
         self.ABstate = state
 
+#------------------------------------------Error code----------------------------------------------
+    def ESR(self):
+        try:
+            self.response = self.instrVISA.read()
+        except:
+            None
+        self.response = self.instrVISA.query(':SYST:ERR:CODE?')
+        self.response = (self.response).strip()
+        if self.response != "0":
+            print(self.response)
+            if self.response in self.err_code:
+                print(self.err_code[self.response])
+            self.instrVISA.write(':SYST:CLE')
         
+    def err_code_dict(self):
+        self.err_code = {
+            "4910":"No readings in buffer",
+            "-113":"Undefined header"
+
+        }
 
 
-# ELOAD = ELOAD()
-# ELOAD.connect("ASRL91::INSTR")
-# ELOAD.set_channel('CHAN 1',1)
-# ELOAD.set_mode('CV',1)
-# ELOAD.ABState('B')
-# ELOAD.set_load_val('CV',3,2)
-# #ELOAD.Write_command("CURR:STAT:L1 2;L2 2")
-# ELOAD.fulldisconnect()
+dmm = DMM7510()
+dmm.connect('USB0::0x05E6::0x7510::04444208::INSTR')
+func_array = dmm.get_current_function()
+
